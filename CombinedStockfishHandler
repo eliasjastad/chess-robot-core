@@ -1,0 +1,203 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+
+namespace BO25EB_47
+{
+    internal class StockfishHandler : IDisposable
+    {
+        private readonly string stockfishPath = 
+            @"C:\Users\Elias\Documents\skole\stockfish-windows-x86-64-avx2\stockfish\stockfish-windows-x86-64-avx2.exe";
+        
+        private Process _stockfishProcess;
+
+        public StockfishHandler()
+        {
+            StartStockfish();
+        }
+
+        private void StartStockfish()
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = stockfishPath,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            _stockfishProcess = new Process { StartInfo = psi };
+            _stockfishProcess.Start();
+
+            // Initialize UCI
+            SendCmd("uci");
+            WaitFor("uciok");
+            SendCmd("isready");
+            WaitFor("readyok");
+        }
+
+        private void SendCmd(string cmd)
+        {
+            _stockfishProcess.StandardInput.WriteLine(cmd);
+            _stockfishProcess.StandardInput.Flush();
+        }
+
+        private void WaitFor(string expected, int timeoutSec = 10)
+        {
+            DateTime timeout = DateTime.Now.AddSeconds(timeoutSec);
+            string line;
+            while (DateTime.Now < timeout && (line = _stockfishProcess.StandardOutput.ReadLine()) != null)
+            {
+                if (line.Trim().Equals(expected, StringComparison.OrdinalIgnoreCase))
+                    return;
+            }
+        }
+
+        private string WaitForPrefix(string prefix, int timeoutSec = 5)
+        {
+            DateTime timeout = DateTime.Now.AddSeconds(timeoutSec);
+            string line;
+            while (DateTime.Now < timeout && (line = _stockfishProcess.StandardOutput.ReadLine()) != null)
+            {
+                if (line.StartsWith(prefix))
+                    return line.Substring(prefix.Length).Trim();
+            }
+            return null;
+        }
+
+        // Apply UCI move to FEN
+        public string ApplyMove(string fen, string uciMove)
+        {
+            SendCmd($"position fen {fen} moves {uciMove}");
+            SendCmd("d");
+            return WaitForPrefix("Fen:");
+        }
+
+        // Find best move from position
+        public string FindMove(string fen, int depth)
+        {
+            SendCmd($"position fen {fen}");
+            SendCmd($"go depth {depth}");
+
+            string line;
+            while ((line = _stockfishProcess.StandardOutput.ReadLine()) != null)
+            {
+                if (line.StartsWith("bestmove"))
+                {
+                    string[] tokens = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    return tokens.Length >= 2 ? tokens[1] : "";
+                }
+            }
+            return "";
+        }
+
+        // Evaluate position
+        public string EvaluatePosition(string fen, int depth = 20)
+        {
+            SendCmd($"position fen {fen}");
+            SendCmd($"go depth {depth}");
+
+            string evaluation = "";
+            string line;
+            while ((line = _stockfishProcess.StandardOutput.ReadLine()) != null)
+            {
+                if (line.Contains("score mate"))
+                {
+                    int mate = int.Parse(line.Split("score mate")[1].Split(' ')[1]);
+                    return mate > 0 ? $"Mate in {mate} for white." : $"Mate in {-mate} for black.";
+                }
+                else if (line.Contains("score cp"))
+                {
+                    int cp = int.Parse(line.Split("score cp")[1].Split(' ')[1]);
+                    double score = cp / 100.0;
+                    return score > 0 ? $"White has advantage of {score}" :
+                           score < 0 ? $"Black has advantage of {-score}" :
+                           "The position is equal";
+                }
+                else if (line.StartsWith("bestmove"))
+                {
+                    break;
+                }
+            }
+            return string.IsNullOrEmpty(evaluation) ? "No evaluation found." : evaluation;
+        }
+
+        // Detect which move leads from fenBefore → fenAfter
+        public string FindUciMove(string fenBefore, string fenAfter)
+        {
+            SendCmd($"position fen {fenBefore}");
+            SendCmd("go perft 1");
+
+            var moves = new List<string>();
+            string line;
+            while ((line = _stockfishProcess.StandardOutput.ReadLine()) != null)
+            {
+                if (line.Contains(":"))
+                {
+                    string move = line.Split(':')[0].Trim();
+                    if (move.Length == 4 || move.Length == 5)
+                        moves.Add(move);
+                }
+                if (line.StartsWith("Nodes searched:") || line.StartsWith("Total nodes:"))
+                    break;
+            }
+
+            string boardAfter = fenAfter.Split(' ')[0];
+            foreach (var move in moves)
+            {
+                SendCmd($"position fen {fenBefore} moves {move}");
+                SendCmd("d");
+                string newFen = WaitForPrefix("Fen:");
+                if (!string.IsNullOrEmpty(newFen))
+                {
+                    string boardNew = newFen.Split(' ')[0];
+                    if (boardNew.Equals(boardAfter, StringComparison.Ordinal))
+                        return move;
+                }
+            }
+            return "";
+        }
+
+        // Check stalemate
+        public bool IsStalemate(string fen)
+        {
+            SendCmd($"position fen {fen}");
+            SendCmd("go depth 1");
+
+            string line;
+            bool hasMove = false;
+            while ((line = _stockfishProcess.StandardOutput.ReadLine()) != null)
+            {
+                if (line.StartsWith("bestmove"))
+                {
+                    if (!line.Contains("(none)"))
+                        hasMove = true;
+                    break;
+                }
+            }
+
+            if (hasMove) return false;
+
+            SendCmd("d");
+            while ((line = _stockfishProcess.StandardOutput.ReadLine()) != null)
+            {
+                if (line.StartsWith("Checkers:"))
+                    return line.Trim().EndsWith("none");
+            }
+            return false;
+        }
+
+        public void Close()
+        {
+            if (_stockfishProcess != null && !_stockfishProcess.HasExited)
+            {
+                _stockfishProcess.StandardInput.WriteLine("quit");
+                _stockfishProcess.WaitForExit();
+                _stockfishProcess.Close();
+            }
+        }
+
+        public void Dispose() => Close();
+    }
+}
