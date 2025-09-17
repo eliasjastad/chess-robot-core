@@ -3,7 +3,7 @@
 This repository contains selected **core classes** from my bachelor’s thesis project, where we developed an **automatic chess-playing robot** capable of playing against a human opponent with adjustable difficulty.  
 
 The robot system combines **computer vision, artificial intelligence, robotics, and system integration**.  
-This repo does not include the full project (≈500MB with binaries and datasets), but instead highlights the most important and representative components.  
+This repo does not include the full project (≈500MB with binaries and datasets, and over 3000 lines of code spread across 20 classes), but instead highlights the most important and representative components.  
 
 ---
 
